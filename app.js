@@ -15,8 +15,15 @@ function GetRandomInt(min, max) {
 function FromPolar(v, theta) {
     return [v * Math.cos(theta), v * Math.sin(theta)];
 }
+function ToLuma(r, g, b) {
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+// Clamp makes sure the values stays within the min/max range
+function Clamp(min, max, value) {
+    return value > max ? max : (value < min ? min : value);
+}
 // Particle Constants
-var MaxParticleSize = 3;
+var MaxParticleSize = 6;
 //////////////////////////////////////////////////
 var Particle = /** @class */ (function () {
     function Particle(w, h, palette) {
@@ -28,32 +35,59 @@ var Particle = /** @class */ (function () {
         this.speed = 0;
         this.theta = 0; //describes the velocity
         this.radius = 1.0; // size of the particle
-        this.ttl = 500; // Houm much time is left to live
+        this.ttl = 500; // How much time is left to live
         this.lifetime = 500; //How long the particle will live
+        this.alpha = 1.0;
         this.color = 'black';
-        this.x = GetRandomFloat(0, w);
-        this.y = GetRandomFloat(0, h);
+        this.reset();
+    }
+    Particle.prototype.reset = function () {
+        this.x = GetRandomFloat(0, this.w);
+        this.y = GetRandomFloat(0, this.h);
         this.speed = GetRandomFloat(0, 3.0);
         this.theta = GetRandomFloat(0, 2 * Math.PI);
-        this.radius = GetRandomFloat(0.05, MaxParticleSize);
+        this.radius = GetRandomFloat(0.05, 1.0);
         this.lifetime = this.ttl = GetRandomFloat(25, 50);
-        this.color = palette[GetRandomInt(0, palette.length)];
-    }
-    Particle.prototype.Update = function () {
+        this.color = this.palette[GetRandomInt(0, this.palette.length)];
+        this.ttl = this.lifetime = GetRandomInt(25, 50);
+    };
+    Particle.prototype.imageComplementLuma = function (imageData) {
+        var p = Math.floor(this.x) + Math.floor(this.y) * imageData.width;
+        // ImageData contains RGBA values
+        var i = Math.floor(p * 4);
+        var r = imageData.data[i + 0];
+        var g = imageData.data[i + 1];
+        var b = imageData.data[i + 2];
+        var luma = ToLuma(r, g, b); // 0 -> 255
+        // luma is higher for lighter pixel
+        var ln = 1 - luma / 255.0; // complement; higher ln means darker
+        return ln;
+    };
+    Particle.prototype.Update = function (imageData) {
         // Randomly move the particles
+        var ln = this.imageComplementLuma(imageData);
+        var lt = (this.lifetime - this.ttl) / this.lifetime;
+        this.alpha = lt;
         // compute the delta change
-        var dRadius = GetRandomFloat(-MaxParticleSize / 10, MaxParticleSize / 10);
-        var dSpeed = GetRandomFloat(-0.01, 0.01);
+        var dRadius = GetRandomFloat(-MaxParticleSize / 5, MaxParticleSize / 5);
+        var dSpeed = GetRandomFloat(-0.2, 0.2);
         var dTheta = GetRandomFloat(-Math.PI / 8, Math.PI / 8);
         //compute new values
         this.speed += dSpeed;
         this.theta += dTheta;
-        var _a = FromPolar(this.speed, this.theta), dx = _a[0], dy = _a[1];
+        var _a = FromPolar(this.speed * ln, this.theta * ln), dx = _a[0], dy = _a[1];
         this.x += dx;
         this.y += dy;
+        this.x = Clamp(0, this.w, this.x);
+        this.y = Clamp(0, this.h, this.y);
         this.radius += dRadius;
         //radius has to be positive
-        this.radius += (this.radius < 0) ? this.radius - 2 * dRadius : 0;
+        this.radius = Clamp(0, MaxParticleSize, this.radius) * ln;
+        //manage particle lifetime
+        this.ttl += -1;
+        if (this.ttl == 0) {
+            this.reset();
+        }
     };
     Particle.prototype.Draw = function (ctx) {
         // TODO Implement this
@@ -63,6 +97,7 @@ var Particle = /** @class */ (function () {
     };
     Particle.prototype.experiment1 = function (ctx) {
         ctx.fillStyle = this.color;
+        ctx.globalAlpha = this.alpha;
         var circle = new Path2D();
         circle.arc(this.x, this.y, this.radius, 0, 2 * Math.PI);
         ctx.fill(circle);
@@ -97,14 +132,14 @@ var Simulation = /** @class */ (function () {
             this.particles.push(new Particle(this.width, this.height, this.palette));
         }
     }
-    Simulation.prototype.Update = function () {
+    Simulation.prototype.Update = function (imageData) {
         // Update Particles
-        this.particles.forEach(function (p) { return p.Update(); });
+        this.particles.forEach(function (p) { return p.Update(imageData); });
     };
     Simulation.prototype.Draw = function (ctx) {
         //Draw Background
         if (!this.init) {
-            ctx.fillStyle = this.palette[0];
+            ctx.fillStyle = this.palette[3];
             ctx.fillRect(0, 0, this.width, this.height);
             this.init = true;
         }
@@ -113,9 +148,7 @@ var Simulation = /** @class */ (function () {
     };
     return Simulation;
 }());
-function bootstrapper() {
-    var width = 800;
-    var height = 800;
+function createDrawCanvas(imageCtx, width, height) {
     var updateFrameRate = 50;
     var renderFrameRate = 50;
     var canvas = document.createElement('canvas');
@@ -130,10 +163,35 @@ function bootstrapper() {
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
     var sim = new Simulation(width, height);
-    setInterval(function () { sim.Update(); }, 1000 / updateFrameRate);
+    var imageData = imageCtx.getImageData(0, 0, width, height);
+    setInterval(function () { sim.Update(imageData); }, 1000 / updateFrameRate);
     setInterval(function () {
         sim.Draw(ctx),
             1000 / renderFrameRate;
     });
 }
-bootstrapper();
+function bootstrapper(w, h) {
+    var width = w;
+    var height = h;
+    var imageCanvas = document.createElement('canvas');
+    document.body.appendChild(imageCanvas);
+    imageCanvas.width = width;
+    imageCanvas.height = height;
+    var ctx = imageCanvas.getContext('2d');
+    if (!ctx)
+        return;
+    // create an image element to load the jpg to 
+    var image = new window.Image();
+    if (!image)
+        return;
+    image.crossOrigin = 'Anonymous';
+    image.onload = function (e) {
+        ctx.drawImage(image, 0, 0, width, height);
+        createDrawCanvas(ctx, width, height);
+    };
+    var images = ['elon.jpeg'];
+    // image.src = images[GetRandomInt(0,images.length)]
+    image.src = images[0];
+    // createDrawCanvas(width, height)
+}
+bootstrapper(425, 475);
